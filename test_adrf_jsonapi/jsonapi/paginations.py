@@ -186,4 +186,3 @@ class LimitOffsetAsyncPagination:
             return await queryset.acount()
         except (AttributeError, TypeError):
             return len(queryset)
-

@@ -5,10 +5,11 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from adrf.viewsets import ViewSet
 
-from .filters import JSONAPIFilter
+from .utils import JSONAPIFilter
 from .paginations import LimitOffsetAsyncPagination
-from .helpers import (reverse, hasattr, get_type_from_model, 
-                      get_related_field_kwarg, get_related_field_objects)
+from .serializers import JSONAPIObjectIdSerializer
+from .helpers import (reverse, get_type_from_model, get_errors_formatted,
+                      get_related_field, get_related_field_objects)
 
 
 class JSONAPIViewSet(ViewSet):
@@ -60,9 +61,9 @@ class JSONAPIViewSet(ViewSet):
     @action(methods=["get", "put"], detail=False, url_name="self",
             url_path=r'(?P<pk>\d+)/relationships/(?P<field_name>\w+)')
     async def self(self, request, *args, **kwargs):
-        field, data = await get_related_field_kwarg(self.queryset, kwargs), None
+        field, data = await get_related_field(self.queryset, kwargs), None
         if request.method.lower() == 'get':
-            if await hasattr(field, 'all'):
+            if hasattr(field, 'all'):
                 data = []
                 for obj in await get_related_field_objects(field):
                     obj_data = await self.serializer.ObjectId(obj).data
@@ -77,34 +78,47 @@ class JSONAPIViewSet(ViewSet):
                     await get_type_from_model(field.__class__) + '-detail', 
                     args=[field.id], request=request
                 )}
-        # TODO: write the put method
+            return Response(data={'data': data})
         elif request.method.lower() == 'put':
-            data = request.data
-            is_many = True if 'data' in data.keys() and type(data['data']) == list else False
-            serializer = self.serializer.Relationships._declared_fields[kwargs['field_name']]
-            if type(data['data']) == list:
-                serializer = serializer
-            serializer = serializer.__class__(
-                data=data, many=is_many, context={'request': request}
-            )
-            if await serializer.is_valid():
-                response_data = await serializer.validated_data
-                status = 200
+            data, response_data = request.data.get('data'), []
+            data = [data] if type(data) != list else data
+            if hasattr(field, 'all'):
+                model_name = field.model
+            elif len(data) > 1:
+                serializer = self.serializer()
+                serializer._errors = {'type': [f"You can't provide more than one object."]}
+                return Response(data=await serializer.errors, status=403)
             else:
-                response_data = await serializer.errors
-                status = 403
+                model_name = field.__class__
+            model_name = await get_type_from_model(model_name)
+            for obj_data in data:
+                obj_data = JSONAPIObjectIdSerializer(
+                    data=obj_data, context={'request': request}
+                )
+                if await obj_data.is_valid():
+                    validated_data = await obj_data.validated_data
+                    obj_type = validated_data.get('type')
+                    if obj_type == model_name:
+                        response_data.append(validated_data)
+                    else:
+                        response_data, status = {'errors': {'type': [
+                            f"\"{obj_type}\" is not a correct object type."
+                        ]}}, 403
+                else:
+                    response_data, status = await obj_data.errors, 403
+                    break
+            else:
+                response_data, status = {'data': response_data}, 200
             return Response(data=response_data, status=status)
-    
-        return Response(data={'data': data})
-    
+
     @action(methods=["get"], detail=False, url_name="related", 
             url_path=r'(?P<pk>\d+)/(?P<field_name>\w+)')
     async def related(self, request, *args, **kwargs):
         ids, empty_data = '', {'data': None}
-        field = await get_related_field_kwarg(self.queryset, kwargs)
-        if await hasattr(field, 'all'):
+        field = await get_related_field(self.queryset, kwargs)
+        if hasattr(field, 'all'):
             empty_data = {'data': []}
-            ids = ",".join(await get_related_field_objects(field))
+            ids = ",".join(str(obj.id) for obj in await get_related_field_objects(field))
             link = '{}?filter[id]={}'.format(await reverse(
                 await get_type_from_model(field.model) + '-list', request=request
             ), ids)
@@ -113,8 +127,4 @@ class JSONAPIViewSet(ViewSet):
                 await get_type_from_model(field.__class__) + '-detail', 
                 args=[field.id], request=request
             ), str(field.id)
-        if ids:
-            return HttpResponseRedirect(link)
-        else:
-            return Response(empty_data, status=404)
-
+        return HttpResponseRedirect(link) if ids else Response(empty_data, status=404)
