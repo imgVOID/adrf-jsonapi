@@ -160,16 +160,28 @@ class JSONAPIBaseSerializer(Field):
     
     @property
     async def _readable_fields(self):
-        fields = await self.fields
+        try:
+            fields = await self.fields
+        except TypeError:
+            fields = self.fields
         for field in fields.values():
+            if type(field) == dict and 'read_only' in field:
+                for val in field.values():
+                    yield val
             if field.read_only:
                 yield field
     
     @property
     async def _writable_fields(self):
-        fields = await self.fields
+        try:
+            fields = await self.fields
+        except TypeError:
+            fields = self.fields
         for field in fields.values():
-            if not field.read_only:
+            if type(field) == dict and 'read_only' not in field:
+                for val in field.values():
+                    yield val
+            elif not field.read_only:
                 yield field
     
     async def get_fields(self):
@@ -213,7 +225,10 @@ class JSONAPIBaseSerializer(Field):
         read_only_fields = await getattr(meta, 'read_only_fields', [])
         ret = {}
         errors = {}
-        fields = await self.fields
+        try:
+            fields = await self.fields
+        except TypeError:
+            fields = self.fields
         for name, field in fields.items():
             if hasattr(field, 'child'):
                 field.child.required, field = field.required, field.child
@@ -303,6 +318,18 @@ class JSONAPIBaseSerializer(Field):
         if not hasattr(self, '_validated_data'):
             msg = 'You must call `.is_valid()` before accessing `.validated_data`.'
             raise AssertionError(msg)
+        validated_data = [self._validated_data] if type(self._validated_data) != list else self._validated_data
+
+        for obj in validated_data:
+            for name, field in list(obj.items()):
+                print(getattr(field, 'pk', None))
+                if hasattr(field, 'pk'):
+                    if type(self._validated_data) == list:
+                        self._validated_data.remove(field)
+                        self._validated_data.append(await JSONAPIObjectIdSerializer(field).data)
+                    else:
+                        del self._validated_data[name]
+                        self._validated_data[name] = await JSONAPIObjectIdSerializer(field).data
         return self._validated_data
 
 
@@ -319,7 +346,6 @@ class JSONAPISerializerMetaclass(SerializerMetaclass):
         return type.__new__(cls, name, bases, attrs)
 
 
-# TODO: the list-many functionality
 class JSONAPIObjectIdSerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetaclass):
     type, id = serializers.CharField(), serializers.IntegerField()
 
@@ -345,12 +371,13 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
         url = await getattr(self, self.url_field_name, None)
         for key, val in data.items():
             validated_data, is_many = {}, hasattr(val, 'all')
-            objects = [await JSONAPIObjectIdSerializer(obj).data for obj
-                       in await get_related_field_objects(val)]
+            objects = [await obj for obj in JSONAPIObjectIdSerializer(
+                await get_related_field_objects(val), many=True
+            ).data]
             if objects and not is_many:
                 objects, validated_data = objects[0], objects[0]
             elif objects:
-                validated_data = objects[0]
+                validated_data = objects
             elif not is_many:
                 objects = None
             data[key] = {'data': objects}
@@ -358,6 +385,8 @@ class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMeta
                 links = {'self': f"{url}relationships/{key}/"}
                 if data[key]['data']:
                     links['related'] = f"{url}{key}/"
+                if type(validated_data) == list:
+                    validated_data = validated_data[0]
                 links['included'] = validated_data.get('type')
                 data[key][self.url_field_name] = links
         return data
@@ -437,7 +466,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
     
     class Meta:
         list_serializer_class = JSONAPIManySerializer
-        read_only_fields = ('id')
+        read_only_fields = ('id',)
     
     async def _get_included(self, instance, rels, included, is_included_disabled=False):
         if not rels or is_included_disabled:
@@ -451,7 +480,7 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
             for obj in objects_list:
                 
                 data_included = {'type': await get_type_from_model(obj.__class__), 'id': obj.id}
-                key = "_".join(str(data_included.values()))
+                key = "_".join(str(val) for val in data_included.values())
                 if included.get(key):
                     continue
                 for attribute in field_info.get('fields'):

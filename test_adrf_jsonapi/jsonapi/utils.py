@@ -59,7 +59,7 @@ class JSONAPISerializerRepr:
         ret = self._field_repr(serializer, self._force_many) + ':'
         indent_str = '    ' * indent
         if self._force_many:
-            fields = self._force_many._declared_fields
+            fields = serializer.child._declared_fields
         else:
             fields = serializer._declared_fields
         for field_name, field in fields.items():
@@ -137,13 +137,16 @@ class cached_property(cached_property):
                 f"instance to cache {self.attrname!r} property."
             )
             raise TypeError(msg) from None
-        val = await ensure_future(self.func(instance))
-        try:
-            cache[self.attrname] = val
-        except TypeError:
-            msg = (
-                f"The '__dict__' attribute on {type(instance).__name__!r} instance "
-                f"does not support item assignment for caching {self.attrname!r} property."
-            )
-            raise TypeError(msg) from None
+        if not cache.get(self.attrname):
+            val = await ensure_future(self.func(instance))
+            try:
+                cache[self.attrname] = val
+            except TypeError:
+                msg = (
+                    f"The '__dict__' attribute on {type(instance).__name__!r} instance "
+                    f"does not support item assignment for caching {self.attrname!r} property."
+                )
+                raise TypeError(msg) from None
+        else:
+            val = cache[self.attrname]
         return val

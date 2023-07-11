@@ -1,6 +1,7 @@
 from rest_framework import serializers
 #from django.core.validators import MaxValueValidator, MaxLengthValidator
 from jsonapi.serializers import JSONAPISerializer
+from jsonapi.model_serializers import JSONAPIModelSerializer
 from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation
 
 class TestIncludedRelationSerializer(JSONAPISerializer):
@@ -25,26 +26,10 @@ class TestIncludedRelationSerializer(JSONAPISerializer):
         #    }
 
 
-class TestIncludedSerializer(JSONAPISerializer):
-    
-    class Attributes(JSONAPISerializer.Attributes):
-        text_included = serializers.CharField(max_length=128)
-        int_included = serializers.IntegerField()
-        bool_included = serializers.BooleanField()
-        choice_int_included = serializers.ChoiceField(((1, 'One'), (2, 'Two')))
-        choice_str_included = serializers.ChoiceField((
-            ('UK', 'United Kingdom'), ('US', 'United States')
-        ))
-        array_included = serializers.ListField(child=serializers.IntegerField(), max_length=2)
-    
-    class Relationships(JSONAPISerializer.Relationships):
-        foreign_key_included = JSONAPISerializer.ObjectId(required=False)
-        many_to_many_included = serializers.ListField(
-            required=False, child=JSONAPISerializer.ObjectId()
-        )
-    
+class TestIncludedSerializer(JSONAPIModelSerializer):
     class Meta:
         model, model_type = TestIncluded, 'test-included'
+        fields = ['__all__']
         #
         #validators = {
         #    'id': MaxValueValidator(0),
@@ -67,12 +52,21 @@ class TestSerializer(JSONAPISerializer):
     
     class Relationships(JSONAPISerializer.Relationships):
         foreign_key = JSONAPISerializer.ObjectId(required=False)
-        many_to_many = serializers.ListField(
-            required=False, child=JSONAPISerializer.ObjectId()
-        )
+        many_to_many = JSONAPISerializer.ObjectId(required=False, many=True)
     
     class Meta:
         model, model_type = Test, 'test'
+        #validators = {
+        #    'id': MaxValueValidator(0),
+        #    'attributes.text': MaxLengthValidator(0),
+        #    'relationships.many_to_many': MaxLengthValidator(0)
+        #    }
+
+
+class TestModelSerializer(JSONAPIModelSerializer):
+    class Meta:
+        model, model_type = Test, 'test'
+        fields = ['__all__']
         #validators = {
         #    'id': MaxValueValidator(0),
         #    'attributes.text': MaxLengthValidator(0),

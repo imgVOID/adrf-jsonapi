@@ -5,7 +5,8 @@ from asgiref.sync import sync_to_async
 from jsonapi.viewsets import JSONAPIViewSet
 from .models import Test, TestIncluded, TestIncludedRelation
 from adrf_jsonapi.permissions import AuthenticatedReadIsStaffOtherPermission
-from adrf_jsonapi.serializers import TestSerializer, TestIncludedSerializer, TestIncludedRelationSerializer
+from adrf_jsonapi.serializers import (TestSerializer, TestIncludedSerializer, 
+                                      TestIncludedRelationSerializer, TestModelSerializer)
 from rest_framework.reverse import reverse
 from asgiref.sync import sync_to_async
 
@@ -31,3 +32,10 @@ class TestIncludedRelationViewSet(JSONAPIViewSet):
     authentication_classes = [SessionAuthentication]
     serializer = TestIncludedRelationSerializer
     queryset = TestIncludedRelation.objects.all()
+
+
+class TestModelViewSet(JSONAPIViewSet):
+    permission_classes = [AuthenticatedReadIsStaffOtherPermission]
+    authentication_classes = [SessionAuthentication]
+    serializer = TestModelSerializer
+    queryset = Test.objects.prefetch_related('many_to_many').select_related('foreign_key').all()
