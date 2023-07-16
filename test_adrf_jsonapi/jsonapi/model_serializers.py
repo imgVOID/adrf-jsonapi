@@ -65,6 +65,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         serializer_field_mapping[postgres_fields.JSONField] = JSONField
     serializer_object_id_field = JSONAPIObjectIdSerializer
     serializer_related_field = HyperlinkedRelatedField
+    serializer_related_field_many = ManyRelatedField
     serializer_related_to_field = SlugRelatedField
     serializer_url_field = HyperlinkedIdentityField
     serializer_choice_field = ChoiceField
@@ -142,13 +143,12 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         fields.update(hidden_fields)
         fields_jsonapi = {'id': fields.pop('id'), 'attributes': {}, 'relationships': {}}
         for key, field in fields.items():
-            if type(field) in [self.serializer_related_field, ManyRelatedField]:
+            if type(field) in [self.serializer_related_field, 
+                               self.serializer_related_field_many]:
                 fields_jsonapi['relationships'][key] = field
             else:
                 fields_jsonapi['attributes'][key] = field
         return fields_jsonapi
-    
-    # Methods for determining the set of field names to include...
 
     async def get_field_names(self, declared_fields, info):
         """
@@ -192,12 +192,6 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
                       if not f.auto_created or f.name == 'id']
 
         if fields is not None:
-            # Ensure that all declared fields have also been included in the
-            # `Meta.fields` option.
-
-            # Do not require any fields that are declared in a parent class,
-            # in order to allow serializer subclasses to only include
-            # a subset of fields.
             required_field_names = set(declared_fields)
             for cls in self.__class__.__bases__:
                 required_field_names -= set(getattr(cls, '_declared_fields', []))
@@ -530,7 +524,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         Used internally by `get_uniqueness_field_options`.
         """
         model = getattr(self.Meta, 'model')
-        model_fields, attributes, relationships = {}, {}, {}
+        attributes, relationships = {}, {}
         for field_name in field_names:
             if field_name in declared_fields:
                 field = declared_fields[field_name]
@@ -540,10 +534,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
                     source = extra_kwargs[field_name]['source']
                 except KeyError:
                     source = field_name
-
             if '.' in source or source == '*':
                 continue
-
             with contextlib.suppress(FieldDoesNotExist):
                 field = model._meta.get_field(source)
                 if isinstance(field, DjangoModelField):
@@ -551,9 +543,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
                         relationships[source] = field
                     else:
                         attributes[source] = field
-        return {'attributes': attributes, 'relationships': relationships}
-
-    # Determine the validators to apply...
+        model_fields = {'attributes': attributes, 
+                        'relationships': relationships}
+        return model_fields
 
     async def get_validators(self):
         """
@@ -649,7 +641,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
                 instance, relationships, included,
                 self._context.get('is_included_disabled', False)
             )
-        return {'data': {
+        data = {'data': {
             'type': await get_type_from_model(instance.__class__),
             'id': getattr(instance, 'id'),
             'attributes': {
@@ -659,6 +651,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
             'relationships': relationships,
             'links': {'self': url}
         }, 'included': list(included.values())}
+        if not data.get('relationships') and 'relationships' in data:
+            del data['relationships']
+        return data
 
     async def to_internal_value(self, data):
         meta = getattr(self, 'Meta', None)
