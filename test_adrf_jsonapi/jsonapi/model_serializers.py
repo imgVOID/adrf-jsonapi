@@ -48,8 +48,7 @@ from rest_framework.compat import postgres_fields
 from rest_framework.serializers import ModelSerializer
 
 from .serializers import JSONAPISerializer, SerializerMetaclass, JSONAPIAttributesSerializer, JSONAPIObjectIdSerializer
-from .helpers import get_relation_kwargs
-from .helpers import (reverse, get_related_field_objects, get_type_from_model, to_coroutine)
+from .helpers import (get_relation_kwargs, get_type_from_model, to_coroutine, getattr)
 
 ALL_FIELDS = '__all__'
 
@@ -94,8 +93,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
             )
 
         declared_fields = copy.deepcopy(self._declared_fields)
-        model = getattr(self.Meta, 'model')
-        depth = getattr(self.Meta, 'depth', 0)
+        model = await getattr(self.Meta, 'model')
+        depth = await getattr(self.Meta, 'depth', 0)
 
         if depth is not None:
             assert depth >= 0, "'depth' may not be negative."
@@ -157,8 +156,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         set of fields, but also takes into account the `Meta.fields` or
         `Meta.exclude` options if they have been specified.
         """
-        fields = getattr(self.Meta, 'fields', None)
-        exclude = getattr(self.Meta, 'exclude', None)
+        fields = await getattr(self.Meta, 'fields', None)
+        exclude = await getattr(self.Meta, 'exclude', None)
 
         if fields and fields != ALL_FIELDS and not isinstance(fields, (list, tuple)):
             raise TypeError(
@@ -194,7 +193,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         if fields is not None:
             required_field_names = set(declared_fields)
             for cls in self.__class__.__bases__:
-                required_field_names -= set(getattr(cls, '_declared_fields', []))
+                required_field_names -= set(await getattr(cls, '_declared_fields', []))
 
             for field_name in required_field_names:
                 assert field_name in fields, (
@@ -319,9 +318,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         if (postgres_fields and isinstance(model_field, postgres_fields.JSONField)) or is_django_jsonfield:
             # Populate the `encoder` argument of `JSONField` instances generated
             # for the model `JSONField`.
-            field_kwargs['encoder'] = getattr(model_field, 'encoder', None)
+            field_kwargs['encoder'] = await getattr(model_field, 'encoder', None)
             if is_django_jsonfield:
-                field_kwargs['decoder'] = getattr(model_field, 'decoder', None)
+                field_kwargs['decoder'] = await getattr(model_field, 'decoder', None)
 
         if postgres_fields and isinstance(model_field, postgres_fields.ArrayField):
             # Populate the `child` argument on `ListField` instances generated
@@ -423,9 +422,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         Return a dictionary mapping field names to a dictionary of
         additional keyword arguments.
         """
-        extra_kwargs = copy.deepcopy(getattr(self.Meta, 'extra_kwargs', {}))
+        extra_kwargs = copy.deepcopy(await getattr(self.Meta, 'extra_kwargs', {}))
 
-        read_only_fields = getattr(self.Meta, 'read_only_fields', None)
+        read_only_fields = await getattr(self.Meta, 'read_only_fields', None)
         if read_only_fields is not None:
             if not isinstance(read_only_fields, (list, tuple)):
                 raise TypeError(
@@ -456,10 +455,10 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
 
         ('dict of updated extra kwargs', 'mapping of hidden fields')
         """
-        if getattr(self.Meta, 'validators', None) is not None:
+        if await getattr(self.Meta, 'validators', None) is not None:
             return (extra_kwargs, {})
 
-        model = getattr(self.Meta, 'model')
+        model = await getattr(self.Meta, 'model')
         model_fields = await self._get_model_fields(
             field_names, declared_fields, extra_kwargs
         )
@@ -487,9 +486,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
             # Get the model field that is referred too.
             unique_constraint_field = model._meta.get_field(unique_constraint_name)
 
-            if getattr(unique_constraint_field, 'auto_now_add', None):
+            if await getattr(unique_constraint_field, 'auto_now_add', None):
                 default = CreateOnlyDefault(timezone.now)
-            elif getattr(unique_constraint_field, 'auto_now', None):
+            elif await getattr(unique_constraint_field, 'auto_now', None):
                 default = timezone.now
             elif unique_constraint_field.has_default():
                 default = unique_constraint_field.default
@@ -523,7 +522,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         Returned as a dict of 'model field name' -> 'model field'.
         Used internally by `get_uniqueness_field_options`.
         """
-        model = getattr(self.Meta, 'model')
+        model = await getattr(self.Meta, 'model')
         attributes, relationships = {}, {}
         for field_name in field_names:
             if field_name in declared_fields:
@@ -552,7 +551,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         Determine the set of validators to use when instantiating serializer.
         """
         # If the validators have been declared explicitly then use that.
-        validators = getattr(getattr(self, 'Meta', None), 'validators', None)
+        validators = await getattr(await getattr(self, 'Meta', None), 'validators', None)
         if validators is not None:
             return list(validators)
 
@@ -605,12 +604,12 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         """
         Object instance -> Dict of primitive datatypes.
         """
-        url = getattr(self, self.url_field_name, None)
+        url = await getattr(self, self.url_field_name, None)
         if url and not url.endswith(str(instance.id) + '/'):
             url = f"{url}{str(instance.id)}/"
         included = {}
         fields = await self.fields
-        relationships = {key: {'data': getattr(instance, key)} for key in fields['relationships'].keys()}
+        relationships = {key: {'data': await getattr(instance, key)} for key in fields['relationships'].keys()}
         for key, val in relationships.items():
             val = val['data'] if type(val) == dict and 'data' in val else val
             validated_data, is_many = {}, hasattr(val, 'all')
@@ -643,9 +642,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
             )
         data = {'data': {
             'type': await get_type_from_model(instance.__class__),
-            'id': getattr(instance, 'id'),
+            'id': await getattr(instance, 'id'),
             'attributes': {
-                key: getattr(instance, key) 
+                key: await getattr(instance, key) 
                 for key in fields['attributes'].keys()
             }, 
             'relationships': relationships,
@@ -656,8 +655,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         return data
 
     async def to_internal_value(self, data):
-        meta = getattr(self, 'Meta', None)
-        read_only_fields = getattr(meta, 'read_only_fields', [])
+        meta = await getattr(self, 'Meta', None)
+        read_only_fields = await getattr(meta, 'read_only_fields', [])
         ret = {}
         errors = {}
         try:
@@ -686,7 +685,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
             value = value.pop('data', value) if type(value) == dict else value
             value = [value]
             run_validation = await to_coroutine(field.run_validation)
-            validate_method = getattr(self, 'validate_' + name, None)
+            validate_method = await getattr(self, 'validate_' + name, None)
             for obj in value:
                 if hasattr(field, '_validated_data'):
                     del field._validated_data

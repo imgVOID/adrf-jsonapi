@@ -322,7 +322,6 @@ class JSONAPIBaseSerializer(Field):
 
         for obj in validated_data:
             for name, field in list(obj.items()):
-                print(getattr(field, 'pk', None))
                 if hasattr(field, 'pk'):
                     if type(self._validated_data) == list:
                         self._validated_data.remove(field)
@@ -504,7 +503,8 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
                         request=self._context.get('request')
                     )}
                 except TypeError:
-                    print(rels[rel]['links'])
+                    #print(rels[rel]['links'])
+                    pass
                 included[key] = data_included
     
     async def to_internal_value(self, data):
@@ -529,7 +529,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
                 class Meta:
                     model = rel_model.field.related_model
                 serializer.Meta = Meta
-                print(self.Meta.model)
                 await self.__class__.validate_type(serializer, relationships[rel]['type'])
         return {**data.get('attributes', {}), 'relationships': relationships}
     

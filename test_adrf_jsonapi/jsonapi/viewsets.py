@@ -43,7 +43,7 @@ class JSONAPIViewSet(ViewSet):
         return response
     
     async def create(self, request):
-        startT = time.time()
+        #startT = time.time()
         data = request.data
         is_many = True if 'data' in data.keys() and type(data['data']) == list else False
         serializer = self.serializer(
@@ -55,7 +55,7 @@ class JSONAPIViewSet(ViewSet):
         else:
             response_data = await serializer.errors
             status = 403
-        print(f'function time: {time.time() - startT}ms')
+        #print(f'function time: {time.time() - startT}ms')
         return Response(data=response_data, status=status)
     
     @action(methods=["get", "put"], detail=False, url_name="self",
