@@ -1,54 +1,48 @@
 import copy
-from django.core.exceptions import (ValidationError as DjangoValidationError)
-from rest_framework.exceptions import ValidationError
-from time import timezone
 import contextlib
-from collections import defaultdict
+from time import timezone
+
 from django.db import models
-from django.utils.translation import gettext_lazy as _
-from rest_framework.settings import api_settings
-from rest_framework.utils import html, model_meta, representation
-from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
-
 from django.db.models.fields import Field as DjangoModelField
-
-from rest_framework.serializers import HyperlinkedModelSerializer
-
-from rest_framework.fields import (  # NOQA # isort:skip
-    CreateOnlyDefault, CurrentUserDefault, SkipField, empty
+from django.utils.translation import gettext_lazy as _
+from django.core.exceptions import (
+    ValidationError as DjangoValidationError, 
+    FieldDoesNotExist, ImproperlyConfigured
 )
 
-from rest_framework.relations import Hyperlink, PKOnlyObject
-
-from rest_framework.fields import (JSONField, Field, SkipField, get_error_detail)
-
+from rest_framework.exceptions import ValidationError
+from rest_framework.reverse import reverse
+from rest_framework.settings import api_settings
+from rest_framework.utils import model_meta
+from rest_framework.fields import (
+    CreateOnlyDefault, SkipField, empty, JSONField, 
+    Field, SkipField, CharField, ChoiceField, 
+    HiddenField, HStoreField, JSONField, ListField, 
+    ModelField, ReadOnlyField, get_error_detail
+)
 from rest_framework.validators import (
     UniqueForDateValidator, UniqueForMonthValidator, UniqueForYearValidator,
     UniqueTogetherValidator
 )
-
-from rest_framework.fields import (  # NOQA # isort:skip
-    BooleanField, CharField, ChoiceField, DateField, DateTimeField, DecimalField,
-    DictField, DurationField, EmailField, Field, FileField, FilePathField, FloatField,
-    HiddenField, HStoreField, IPAddressField, ImageField, IntegerField, JSONField,
-    ListField, ModelField, MultipleChoiceField, ReadOnlyField,
-    RegexField, SerializerMethodField, SlugField, TimeField, URLField, UUIDField,
-)
-
-from rest_framework.relations import (  # NOQA # isort:skip
-    HyperlinkedIdentityField, HyperlinkedRelatedField, ManyRelatedField,
-    PrimaryKeyRelatedField, RelatedField, SlugRelatedField, StringRelatedField,
+from rest_framework.relations import (
+    HyperlinkedIdentityField, HyperlinkedRelatedField, 
+    ManyRelatedField, SlugRelatedField
 )
 from rest_framework.utils.field_mapping import (
     ClassLookupDict, get_field_kwargs, get_nested_relation_kwargs,
     get_relation_kwargs, get_url_kwargs
 )
-
 from rest_framework.compat import postgres_fields
 from rest_framework.serializers import ModelSerializer
 
-from .serializers import JSONAPISerializer, SerializerMetaclass, JSONAPIAttributesSerializer, JSONAPIObjectIdSerializer
-from .helpers import (get_relation_kwargs, get_type_from_model, to_coroutine, getattr)
+from .serializers import (
+    JSONAPISerializer, SerializerMetaclass, 
+    JSONAPIAttributesSerializer, JSONAPIObjectIdSerializer
+)
+from .helpers import (
+    get_relation_kwargs, get_type_from_model, 
+    to_coroutine, getattr, reverse
+)
 
 ALL_FIELDS = '__all__'
 
@@ -653,14 +647,29 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         return data
 
     async def to_internal_value(self, data):
-        meta = await getattr(self, 'Meta', None)
-        read_only_fields = await getattr(meta, 'read_only_fields', [])
-        ret = {}
-        errors = {}
         try:
             fields = await self.fields
         except TypeError:
             fields = self.fields
+        meta = await getattr(self, 'Meta', None)
+        read_only_fields = await getattr(meta, 'read_only_fields', [])
+        ret = {}
+        errors = {}
+        if data['data'].get('relationships'):
+            for name, field in data['data']['relationships'].items():
+                if fields['relationships'][name].__class__ == self.serializer_related_field:
+                    if type(data['data']['relationships'][name]) != dict:
+                        errors[name] = 'needs to specify id and type keys.'
+                    try:
+                        data['data']['relationships'][name] = await reverse(
+                            fields['relationships'][name].view_name, 
+                            [int(data['data']['relationships'][name]['data']['id'])], 
+                            request = self.context['request']
+                        )
+                    except (KeyError, AttributeError) as exc:
+                        errors[name] = [exc]
+                    except (TypeError) as exc:
+                        errors[name] = ['needs to specify a dict with id and type keys.']
         for name, field in list(fields.items()):
             if type(field) == dict:
                 for name, field in list(fields.pop(name).items()):

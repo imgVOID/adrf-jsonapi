@@ -1,8 +1,9 @@
 from re import findall
 from django.test import TestCase
-from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation
+from django.test.client import RequestFactory
+
 from jsonapi.model_serializers import JSONAPIModelSerializer
-from jsonapi.helpers import get_type_from_model
+from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation
 
 
 class TestModelSerializer(TestCase):
@@ -65,6 +66,7 @@ class TestModelSerializer(TestCase):
                     }
         return data, forward_relations
 
+    # TODO: test manytomany and links
     async def test_retrieve(self):
         serializer = self.get_serializer()
         model_type = serializer.Meta.model_type
@@ -72,8 +74,7 @@ class TestModelSerializer(TestCase):
         obj = await self.main_query.afirst()
         data = await serializer(obj).data
         # Test "data" key
-        data_included = data.get('included')
-        data = data.get('data')
+        data_included, data = data.get('included'), data.get('data')
         self.assertIsInstance(data, dict)
         self.assertEqual(data['type'], model_type)
         # Test "data.attributes" key
@@ -94,7 +95,6 @@ class TestModelSerializer(TestCase):
         [self.assertIn(self.test_relationships[rel_name], data_included) for 
          rel_name in self.test_relationships]
 
-    # TODO: test manytomany
     async def test_list(self):
         list_serializer = self.get_serializer()
         model_type = list_serializer.Meta.model_type
@@ -102,8 +102,7 @@ class TestModelSerializer(TestCase):
         data = await list_serializer(
             self.main_query, many=True
         ).data
-        data_included = data.get('included')
-        data = data.get('data')
+        data_included, data = data.get('included'), data.get('data')
         # Test "data" key
         self.assertIsInstance(data, list)
         [self.assertEqual(obj.get('type'), model_type) for obj in data]
@@ -125,4 +124,39 @@ class TestModelSerializer(TestCase):
         self.assertEqual(self.test_relationships['foreign_key'], data_included[0])
         [self.assertIn(self.test_relationships[rel_name], data_included) for 
          rel_name in self.test_relationships]
-        
+    
+    async def test_validation(self):
+        serializer = self.get_serializer()
+        obj = await self.main_query.afirst()
+        data = await serializer(obj).data
+        data = data['data']
+        rel_type = data['relationships']['foreign_key']['data']['type']
+        rel_id = data['relationships']['foreign_key']['data']['id']
+        # Test validation
+        data['attributes']['text'], data['attributes']['array'] = 'test', [1]
+        serializer = serializer(data=data, context={
+            'request': RequestFactory().get('/' + rel_type + '/' + str(rel_id) + '/')
+        })
+        self.assertTrue(await serializer.is_valid())
+        validated_data = await serializer.validated_data
+        self.assertTrue(validated_data), self.assertIsInstance(validated_data, dict)
+        [self.assertIn(x, data) for x in validated_data]
+
+    async def test_validation_fail(self):
+        # Test validation fail
+        serializer = self.get_serializer()
+        obj = await self.main_query.afirst()
+        data = await serializer(obj).data
+        data = data['data']
+        rel_type = data['relationships']['foreign_key']['data']['type']
+        rel_id = data['relationships']['foreign_key']['data']['id']
+        serializer = serializer(data=data, context={
+            'request': RequestFactory().get('/' + rel_type + '/' + str(rel_id) + '/')
+        })
+        self.assertFalse(await serializer.is_valid())
+        errors = await serializer.errors
+        self.assertIsInstance(errors, dict), self.assertIn('errors', errors), 
+        self.assertIsInstance(errors['errors'], list)
+        [self.assertIn('code', x) and self.assertIn('source', x) for x in errors['errors']]
+        [self.assertIn('The JSON field ', x['detail']) for x in errors['errors']]
+        [self.assertIn('http', x['source']['pointer']) for x in errors['errors']]

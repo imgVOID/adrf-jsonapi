@@ -564,11 +564,10 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
         data = {name: await self.get_value(name, obj_map) for name in 
                 fields.keys() if name in obj_map}
         data = {key: val for key, val in data.items() if val}
-        included = {}
-        if url:
+        included, is_included = {}, not self._context.get('is_included_disabled', False)
+        if is_included:
             await self._get_included(
-                instance, data.get('relationships'), included,
-                self._context.get('is_included_disabled', False)
+                instance, data.get('relationships'), included, not is_included
             )
             data['links'] = {'self': url}
         return {'data': data, 'included': [] if not included
