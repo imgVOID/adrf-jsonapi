@@ -635,11 +635,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
                 relationships[key]['links']['included'] = validated_data[0].get('type')
             else:
                 relationships[key]['links']['included'] = validated_data
-        if url:
-            await self._get_included(
-                instance, relationships, included,
-                self._context.get('is_included_disabled', False)
-            )
+        is_included = not self._context.get('is_included_disabled', False)
+        if is_included:
+            await self._get_included(instance, relationships, included, not is_included)
         data = {'data': {
             'type': await get_type_from_model(instance.__class__),
             'id': await getattr(instance, 'id'),

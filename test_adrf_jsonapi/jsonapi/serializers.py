@@ -434,17 +434,24 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         self._validated_data = validated_data
         return validated_data
     
+    async def _to_representation_instance(self, instance, data, included):
+        obj_data = await self.child.__class__(
+            instance, context={**self._context, 'is_included_disabled': True}
+        ).data
+        data.append(obj_data['data'])
+        await self.child._get_included(
+            instance, obj_data.get('data').get('relationships'), 
+            included, self._context.get('is_included_disabled', False)
+        )
+    
     async def to_representation(self, iterable):
         data, included = [], {}
-        async for instance in iterable:
-            obj_data = await self.child.__class__(
-                instance, context={**self._context, 'is_included_disabled': True}
-            ).data
-            data.append(obj_data['data'])
-            await self.child._get_included(
-                instance, obj_data.get('data').get('relationships'), 
-                included, self._context.get('is_included_disabled', False)
-            )
+        try:
+            async for instance in iterable:
+                await self._to_representation_instance(instance, data, included)
+        except SynchronousOnlyOperation:
+            for instance in iterable:
+                await self._to_representation_instance(instance, data, included)
         # Sort included
         # data['included'] = sorted(
         #    list(included.values()), 

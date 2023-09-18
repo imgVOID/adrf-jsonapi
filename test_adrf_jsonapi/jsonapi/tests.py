@@ -65,7 +65,35 @@ class TestModelSerializer(TestCase):
                     }
         return data, forward_relations
 
-    # TODO: check model type, included
+    async def test_retrieve(self):
+        serializer = self.get_serializer()
+        model_type = serializer.Meta.model_type
+        fields = self.test_fields
+        obj = await self.main_query.afirst()
+        data = await serializer(obj).data
+        # Test "data" key
+        data_included = data.get('included')
+        data = data.get('data')
+        self.assertIsInstance(data, dict)
+        self.assertEqual(data['type'], model_type)
+        # Test "data.attributes" key
+        self.assertIsInstance(data.get('attributes'), dict)
+        [self.assertIn(field, data.get('attributes').keys()) for field in fields]
+        # Test "data.relationships" key
+        self.assertIsInstance(data.get('relationships'), dict)
+        [self.assertIn(field, data.get('relationships').keys()) 
+         for field in self.test_relationships.keys()]
+        [self.assertIn('id', data.get('relationships').get(field).get('data').keys())
+         for field in self.test_relationships.keys()]
+        [self.assertIsInstance(data.get('relationships').get(field).get('data').get('id'), int)
+         for field in self.test_relationships.keys()]
+        [self.assertIsInstance(data.get('relationships').get(field).get('data').get('type'), str)
+         for field in self.test_relationships.keys()]
+        # Test "included" key
+        self.assertEqual(self.test_relationships['foreign_key'], data_included[0])
+        [self.assertIn(self.test_relationships[rel_name], data_included) for 
+         rel_name in self.test_relationships]
+
     # TODO: test manytomany
     async def test_list(self):
         list_serializer = self.get_serializer()
@@ -94,19 +122,7 @@ class TestModelSerializer(TestCase):
         [self.assertIsInstance(obj.get('relationships').get(field).get('data').get('type'), str)
          for obj in data for field in self.test_relationships.keys()]
         # Test "included" key
-        # self.assertEqual(self.test_relationships['foreign_key'], data_included[0])
+        self.assertEqual(self.test_relationships['foreign_key'], data_included[0])
         [self.assertIn(self.test_relationships[rel_name], data_included) for 
          rel_name in self.test_relationships]
         
-    async def test_get(self):
-        list_serializer = self.get_serializer()
-        model_type = list_serializer.Meta.model_type
-        fields = self.test_fields
-        data = await list_serializer(
-            await self.main_query.afirst()
-        ).data
-        data = data.get('data')
-        self.assertIsInstance(data, dict)
-        self.assertEqual(data['type'], model_type)
-        self.assertIsInstance(data.get('attributes'), dict)
-        [self.assertIn(field, data.get('attributes').keys()) for field in fields]

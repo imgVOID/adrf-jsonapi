@@ -28,7 +28,7 @@ class JSONAPIViewSet(ViewSet):
         if data.get('data'):
             response = await pagination.get_paginated_response(data)
         else:
-            response = Response({'data': []})
+            response = Response({'data': []}, status=200)
         return response
     
     async def retrieve(self, request, pk):
