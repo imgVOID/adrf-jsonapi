@@ -21,9 +21,11 @@ async def to_coroutine(function):
 async def get_field_info(obj):
     fields, forward_relations = {}, {}
     if hasattr(obj.__class__, '_meta'):
-        for field in obj.__class__._meta.fields:
+        for field in obj.__class__._meta.get_fields(include_parents=False):
             data = fields if not field.remote_field else forward_relations
-            data[field.name] = {}
+            if not field.remote_field or not field.auto_created:
+                data[field.name] = {}
+    
     return {'fields': fields, 'forward_relations': forward_relations}
 
 
@@ -74,8 +76,7 @@ async def get_related_field(queryset, kwargs):
 
 async def get_related_field_objects(field):
     try:
-        field = [obj async for obj in 
-                 await sync_to_async(field.all)()]
+        field = [obj async for obj in field.all()]
     except (AttributeError, TypeError):
         field = [field] if field else []
     return field
