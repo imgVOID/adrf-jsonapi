@@ -4,8 +4,10 @@ from django.test.client import RequestFactory
 
 from jsonapi.model_serializers import JSONAPIModelSerializer
 from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation
+from jsonapi.helpers import get_type_from_model
 
 
+# TODO: test uniquness
 class TestModelSerializer(TestCase):
     main_model = Test
     main_query = main_model.objects.all()
@@ -66,12 +68,14 @@ class TestModelSerializer(TestCase):
                     }
         return data, forward_relations
 
-    # TODO: test manytomany and links
     async def test_retrieve(self):
         serializer = self.get_serializer()
         model_type = serializer.Meta.model_type
         fields = self.test_fields
         obj = await self.main_query.afirst()
+        await obj.many_to_many.aadd(await TestIncluded.objects.afirst())
+        obj.foreign_key = await TestIncluded.objects.afirst()
+        await obj.asave()
         data = await serializer(obj).data
         # Test "data" key
         data_included, data = data.get('included'), data.get('data')
@@ -80,7 +84,7 @@ class TestModelSerializer(TestCase):
         # Test "data.attributes" key
         self.assertIsInstance(data.get('attributes'), dict)
         [self.assertIn(field, data.get('attributes').keys()) for field in fields]
-        # Test "data.relationships" key
+        # Test "data.relationships" foreign key
         self.assertIsInstance(data.get('relationships'), dict)
         [self.assertIn(field, data.get('relationships').keys()) 
          for field in self.test_relationships.keys()]
@@ -90,7 +94,19 @@ class TestModelSerializer(TestCase):
          for field in self.test_relationships.keys()]
         [self.assertIsInstance(data.get('relationships').get(field).get('data').get('type'), str)
          for field in self.test_relationships.keys()]
+        # Test "data.relationships" many-to-many key
+        self.assertIn('many_to_many', data['relationships'].keys())
+        self.assertIsInstance(data['relationships']['many_to_many'], dict)
+        self.assertIn('data', data['relationships']['many_to_many'].keys())
+        self.assertIsInstance(data['relationships']['many_to_many']['data'], list)
+        self.assertEqual(len(data['relationships']['many_to_many']['data']), 1)
+        self.assertIn('type', data['relationships']['many_to_many']['data'][0])
+        self.assertEqual(data['relationships']['many_to_many']['data'][0].get('type'), 
+                         await get_type_from_model(obj.foreign_key.__class__))
+        self.assertEqual(data['relationships']['many_to_many']['data'][0].get('id'), 
+                         obj.foreign_key.id)
         # Test "included" key
+        del data_included[0]['links']
         self.assertEqual(self.test_relationships['foreign_key'], data_included[0])
         [self.assertIn(self.test_relationships[rel_name], data_included) for 
          rel_name in self.test_relationships]
@@ -99,10 +115,17 @@ class TestModelSerializer(TestCase):
         list_serializer = self.get_serializer()
         model_type = list_serializer.Meta.model_type
         fields = self.test_fields
+        objs = [obj async for obj in self.main_query]
+        related = await TestIncluded.objects.afirst()
+        for obj in objs:
+            obj.foreign_key = related
+            await obj.many_to_many.aadd(related)
+            await obj.asave()
         data = await list_serializer(
             self.main_query, many=True
         ).data
         data_included, data = data.get('included'), data.get('data')
+        del data_included[0]['links']
         # Test "data" key
         self.assertIsInstance(data, list)
         [self.assertEqual(obj.get('type'), model_type) for obj in data]
@@ -110,7 +133,7 @@ class TestModelSerializer(TestCase):
         [self.assertIsInstance(obj.get('attributes'), dict) for obj in data]
         [self.assertIn(field, obj.get('attributes').keys())
          for obj in data for field in fields]
-        # Test "data.relationships" key
+        # Test "data.relationships" foreign key
         [self.assertIsInstance(obj.get('relationships'), dict) for obj in data]
         [self.assertIn(field, obj.get('relationships').keys())
          for obj in data for field in self.test_relationships.keys()]
@@ -120,7 +143,22 @@ class TestModelSerializer(TestCase):
          for obj in data for field in self.test_relationships.keys()]
         [self.assertIsInstance(obj.get('relationships').get(field).get('data').get('type'), str)
          for obj in data for field in self.test_relationships.keys()]
+        # Test "data.relationships" many-to-many key
+        [self.assertIn('many_to_many', obj['relationships'].keys()) and 
+         self.assertIn('data', obj['relationships']['many_to_many'].keys()) and
+         self.assertIn('type', obj['relationships']['many_to_many']['data'][0]) 
+         for obj in data]
+        [self.assertIsInstance(obj['relationships']['many_to_many'], dict) and 
+         self.assertIsInstance(obj['relationships']['many_to_many']['data'], list) 
+         for obj in data]
+        [self.assertEqual(len(obj['relationships']['many_to_many']['data']), 1)
+         and self.assertEqual(obj['relationships']['many_to_many']['data'][0].get('type'), 
+                              await get_type_from_model(obj.foreign_key.__class__)) 
+         and self.assertEqual(obj['relationships']['many_to_many']['data'][0].get('id'), 
+                              obj.foreign_key.id) for obj in data]
         # Test "included" key
+        self.assertEqual(data[0]['relationships']['many_to_many']['data'][0]['id'], data_included[0]['id'])
+        self.assertEqual(data[0]['relationships']['many_to_many']['data'][0]['type'], data_included[0]['type'])
         self.assertEqual(self.test_relationships['foreign_key'], data_included[0])
         [self.assertIn(self.test_relationships[rel_name], data_included) for 
          rel_name in self.test_relationships]
@@ -137,13 +175,12 @@ class TestModelSerializer(TestCase):
         serializer = serializer(data=data, context={
             'request': RequestFactory().get('/' + rel_type + '/' + str(rel_id) + '/')
         })
-        self.assertTrue(await serializer.is_valid())
+        self.assertTrue(await serializer.is_valid()), self.assertFalse(await serializer.errors)
         validated_data = await serializer.validated_data
         self.assertTrue(validated_data), self.assertIsInstance(validated_data, dict)
         [self.assertIn(x, data) for x in validated_data]
 
     async def test_validation_fail(self):
-        # Test validation fail
         serializer = self.get_serializer()
         obj = await self.main_query.afirst()
         data = await serializer(obj).data
