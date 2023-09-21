@@ -28,7 +28,7 @@ class JSONAPIBaseSerializer(Field):
     def __init__(self, instance=None, data=None, 
                  read_only=False, **kwargs):
         if data is not None:
-            self.initial_data = data
+            self._data = self.initial_data = data
         validators = list(kwargs.pop('validators', []))
         if validators:
             self.validators = validators
@@ -278,6 +278,46 @@ class JSONAPIBaseSerializer(Field):
     async def to_representation(self, instance):
         raise NotImplemented('This method is not implemented')
     
+    async def save(self, **kwargs):
+        assert hasattr(self, '_errors'), (
+            'You must call `.is_valid()` before calling `.save()`.'
+        )
+
+        assert not self.errors, (
+            'You cannot call `.save()` on a serializer with invalid data.'
+        )
+
+        # Guard against incorrect use of `serializer.save(commit=False)`
+        assert 'commit' not in kwargs, (
+            "'commit' is not a valid keyword argument to the 'save()' method. "
+            "If you need to access data before committing to the database then "
+            "inspect 'serializer.validated_data' instead. "
+            "You can also pass additional keyword arguments to 'save()' if you "
+            "need to set extra attributes on the saved model instance. "
+            "For example: 'serializer.save(owner=request.user)'.'"
+        )
+
+        assert not hasattr(self, '_data'), (
+            "You cannot call `.save()` after accessing `serializer.data`."
+            "If you need to access data before committing to the database then "
+            "inspect 'serializer.validated_data' instead. "
+        )
+
+        validated_data = {**self.validated_data, **kwargs}
+
+        if self.instance is not None:
+            self.instance = self.update(self.instance, validated_data)
+            assert self.instance is not None, (
+                '`update()` did not return an object instance.'
+            )
+        else:
+            self.instance = self.create(validated_data)
+            assert self.instance is not None, (
+                '`create()` did not return an object instance.'
+            )
+
+        return self.instance
+    
     @property
     async def validators(self):
         if not hasattr(self, '_validators'):
@@ -345,52 +385,6 @@ class JSONAPISerializerMetaclass(SerializerMetaclass):
         return type.__new__(cls, name, bases, attrs)
 
 
-class JSONAPIObjectIdSerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetaclass):
-    type, id = serializers.CharField(), serializers.IntegerField()
-
-    async def to_representation(self, instance):
-        return {'type': await get_type_from_model(instance.__class__), 'id': instance.id}
-
-
-class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    async def to_representation(self, instance):
-        fields = await self.fields
-        instance_map = {key: await getattr(instance, key) for key in fields.keys()}
-        return {name: await self.get_value(name, instance_map) 
-                for name in fields.keys()}
-
-
-# TODO: create the ModelSerializer-like functionality with an own coroutine
-class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
-    async def to_representation(self, instance):
-        fields = await self.fields
-        data = {name: await self.get_value(
-            name, {key: await getattr(instance, key) for key in fields.keys()}
-        ) for name in fields.keys()}
-        url = await getattr(self, self.url_field_name, None)
-        for key, val in data.items():
-            validated_data, is_many = {}, hasattr(val, 'all')
-            objects = [await obj for obj in JSONAPIObjectIdSerializer(
-                await get_related_field_objects(val), many=True
-            ).data]
-            if objects and not is_many:
-                objects, validated_data = objects[0], objects[0]
-            elif objects:
-                validated_data = objects
-            elif not is_many:
-                objects = None
-            data[key] = {'data': objects}
-            if url:
-                links = {'self': f"{url}relationships/{key}/"}
-                if data[key]['data']:
-                    links['related'] = f"{url}{key}/"
-                if type(validated_data) == list:
-                    validated_data = validated_data[0]
-                links['included'] = validated_data.get('type')
-                data[key][self.url_field_name] = links
-        return data
-
-
 class JSONAPIManySerializer(JSONAPIBaseSerializer):
     child, many = None, True
     
@@ -438,18 +432,24 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         obj_data = await self.child.__class__(
             instance, context={**self._context, 'is_included_disabled': True}
         ).data
-        data.append(obj_data['data'])
-        await self.child._get_included(
-            instance, obj_data.get('data').get('relationships'), 
-            included, self._context.get('is_included_disabled', False)
-        )
+        try:
+            data.append(obj_data['data'])
+        except KeyError:
+            data.append(obj_data)
+        try:
+            await self.child._get_included(
+                instance, obj_data.get('data').get('relationships'), 
+                included, self._context.get('is_included_disabled', False)
+            )
+        except AttributeError:
+            pass
     
     async def to_representation(self, iterable):
         data, included = [], {}
         try:
             async for instance in iterable:
                 await self._to_representation_instance(instance, data, included)
-        except SynchronousOnlyOperation:
+        except (SynchronousOnlyOperation, TypeError):
             for instance in iterable:
                 await self._to_representation_instance(instance, data, included)
         # Sort included
@@ -458,6 +458,56 @@ class JSONAPIManySerializer(JSONAPIBaseSerializer):
         #    key=lambda x: (x['type'], x['id'])
         #)
         return {'data': data, 'included': list(included.values())}
+
+
+class JSONAPIObjectIdSerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetaclass):
+    type, id = serializers.CharField(), serializers.IntegerField()
+
+    async def to_representation(self, instance):
+        return {'type': await get_type_from_model(instance.__class__), 'id': instance.id}
+    
+    class Meta:
+        list_serializer_class = JSONAPIManySerializer
+        read_only_fields = ('id',)
+
+
+class JSONAPIAttributesSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    async def to_representation(self, instance):
+        fields = await self.fields
+        instance_map = {key: await getattr(instance, key) for key in fields.keys()}
+        return {name: await self.get_value(name, instance_map) 
+                for name in fields.keys()}
+
+
+# TODO: create the ModelSerializer-like functionality with an own coroutine
+class JSONAPIRelationsSerializer(JSONAPIBaseSerializer, metaclass=SerializerMetaclass):
+    async def to_representation(self, instance):
+        fields = await self.fields
+        data = {name: await self.get_value(
+            name, {key: await getattr(instance, key) for key in fields.keys()}
+        ) for name in fields.keys()}
+        url = await getattr(self, self.url_field_name, None)
+        for key, val in data.items():
+            validated_data, is_many = {}, hasattr(val, 'all')
+            objects = [await obj for obj in JSONAPIObjectIdSerializer(
+                await get_related_field_objects(val), many=True
+            ).data]
+            if objects and not is_many:
+                objects, validated_data = objects[0], objects[0]
+            elif objects:
+                validated_data = objects
+            elif not is_many:
+                objects = None
+            data[key] = {'data': objects}
+            if url:
+                links = {'self': f"{url}relationships/{key}/"}
+                if data[key]['data']:
+                    links['related'] = f"{url}{key}/"
+                if type(validated_data) == list:
+                    validated_data = validated_data[0]
+                links['included'] = validated_data.get('type')
+                data[key][self.url_field_name] = links
+        return data
 
 
 class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetaclass):
@@ -484,7 +534,6 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
             field_info = {key: field_info[key].keys() for key 
                           in ('fields', 'forward_relations') if field_info is not None} 
             for obj in objects_list:
-                
                 data_included = {'type': await get_type_from_model(obj.__class__), 'id': obj.id}
                 key = "_".join(str(val) for val in data_included.values())
                 if included.get(key):
@@ -501,16 +550,17 @@ class JSONAPISerializer(JSONAPIBaseSerializer, metaclass=JSONAPISerializerMetacl
                                         await getattr(obj, relationship)
                                     )]
                     if objects_list:
-                        data_included.update({'relationships': {relationship: {
+                        if 'relationships' not in data_included:
+                            data_included['relationships'] = {}
+                        data_included['relationships'].update({relationship: {
                             'data': objects_list if len(objects_list) > 1 else objects_list.pop()
-                        }}})
+                        }})
                 try:
                     data_included['links'] = {'self': await reverse(
                         view_name + '-detail', args=[data_included['id']],
                         request=self._context.get('request')
                     )}
                 except TypeError:
-                    #print(rels[rel]['links'])
                     pass
                 included[key] = data_included
     
