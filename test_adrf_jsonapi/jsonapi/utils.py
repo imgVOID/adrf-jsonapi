@@ -1,5 +1,7 @@
 from re import sub
 from django.core.exceptions import ImproperlyConfigured
+from rest_framework.fields import Field
+from rest_framework.utils import model_meta
 from functools import cached_property
 from asyncio import ensure_future
 
@@ -150,3 +152,45 @@ class cached_property(cached_property):
         else:
             val = cache[self.attrname]
         return val
+
+class RaiseNested:
+    errors = {
+        'not_writtable_nested':
+            'The `.{method_name}()` method does not support writable nested '
+            'fields by default.\nWrite an explicit `.{method_name}()` method for '
+            'serializer `{module}.{class_name}`, or set `read_only=True` on '
+            'nested serializer fields.',
+        'not_writtable_dotted-source':
+            'The `.{method_name}()` method does not support writable dotted-source '
+            'fields by default.\nWrite an explicit `.{method_name}()` method for '
+            'serializer `{module}.{class_name}`, or set `read_only=True` on '
+            'dotted-source serializer fields.'
+    }
+    
+    def __init__(self, method_name, serializer, validated_data):
+        self.method_name, self.serializer, self.validated_data = method_name, serializer, validated_data
+        self.model_field_info = model_meta.get_field_info(serializer.Meta.model)
+    
+    async def raise_nested_writes(self):
+        assert not any(
+            isinstance(field, Field) and
+            (field.source in self.validated_data) and
+            (field.source in self.model_field_info.relations) and
+            isinstance(self.validated_data[field.source], (list, dict))
+            for field in await self.serializer._writable_fields
+        ), (self.errors['not_writtable_nested'].format(
+            method_name=self.method_name,
+            module=self.serializer.__class__.__module__,
+            class_name=self.serializer.__class__.__name__
+        ))
+        assert not any(
+            len(field.source_attrs) > 1 and
+            (field.source_attrs[0] in self.validated_data) and
+            (field.source_attrs[0] in self.model_field_info.relations) and
+            isinstance(self.validated_data[field.source_attrs[0]], (list, dict))
+            for field in await self.serializer._writable_fields
+        ), (self.errors['not_writtable_dotted_source'].format(
+            method_name=self.method_name, 
+            module=self.serializer.__class__.__module__,
+            class_name=self.serializer.__class__.__name__
+        ))
