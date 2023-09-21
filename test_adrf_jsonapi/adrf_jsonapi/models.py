@@ -16,6 +16,7 @@ class TestIncludedRelation(models.Model):
     class Meta:
         verbose_name = _('Test Included Relation')
         verbose_name_plural = _('Test Included Relations')
+        db_table = default_related_name = 'test_included_relation'
     
     def __str__(self):
         return self.text_included_relation
@@ -30,12 +31,13 @@ class TestIncluded(models.Model):
         ('UK', 'United Kingdom'), ('US', 'United States')
     ), default='UK')
     array_included = ArrayField(models.IntegerField(), size=2, default=list)
-    foreign_key_included = models.ForeignKey(TestIncludedRelation, on_delete=models.SET_NULL, null=True, blank=True)
+    foreign_key_included = models.ForeignKey(TestIncludedRelation, on_delete=models.SET_NULL, null=True, blank=True, related_name='test_included_relation')
     many_to_many_included = models.ManyToManyField(TestIncludedRelation, blank=True, related_name='test_included_relation_many')
     
     class Meta:
         verbose_name = _('Test Included')
         verbose_name_plural = _('Test Included')
+        db_table = default_related_name = 'test_included'
     
     def __str__(self):
         return self.text_included
@@ -50,11 +52,12 @@ class Test(models.Model):
         ('UK', 'United Kingdom'), ('US', 'United States')
     ), default='UK')
     array = ArrayField(models.IntegerField(), size=2, default=list)
-    foreign_key = models.ForeignKey(TestIncluded, on_delete=models.SET_NULL, null=True, blank=True)
+    foreign_key = models.ForeignKey(TestIncluded, on_delete=models.SET_NULL, null=True, blank=True, related_name='test_included')
     many_to_many = models.ManyToManyField(TestIncluded, blank=True, related_name='test_included_many')
     class Meta:
         verbose_name = _('Test')
         verbose_name_plural = _('Tests')
+        default_related_name = 'test'
     
     def __str__(self):
         return self.text
