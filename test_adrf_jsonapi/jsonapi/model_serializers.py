@@ -21,8 +21,7 @@ from rest_framework.fields import (
     ModelField, ReadOnlyField, get_error_detail
 )
 from rest_framework.validators import (
-    UniqueForDateValidator, UniqueForMonthValidator, UniqueForYearValidator,
-    UniqueTogetherValidator
+    UniqueForDateValidator, UniqueForMonthValidator, UniqueForYearValidator
 )
 from rest_framework.relations import (
     HyperlinkedIdentityField, HyperlinkedRelatedField,
@@ -33,56 +32,13 @@ from rest_framework.utils.field_mapping import (
     get_relation_kwargs, get_url_kwargs
 )
 from rest_framework.compat import postgres_fields
-from rest_framework.serializers import ModelSerializer
+from rest_framework.serializers import ModelSerializer, ALL_FIELDS
 
-from .serializers import (
-    JSONAPISerializer, SerializerMetaclass, 
-    JSONAPIAttributesSerializer, JSONAPIObjectIdSerializer,
-    JSONAPIBaseSerializer
-)
-from .helpers import (
-    get_relation_kwargs, get_type_from_model, to_coroutine, getattr
-)
-
-ALL_FIELDS = '__all__'
-
-
-def raise_errors_on_nested_writes(method_name, serializer, validated_data):
-    ModelClass = serializer.Meta.model
-    model_field_info = model_meta.get_field_info(ModelClass)
-    
-    assert not any(
-        isinstance(field, JSONAPIBaseSerializer) and
-        (field.source in validated_data) and
-        (field.source in model_field_info.relations) and
-        isinstance(validated_data[field.source], (list, dict))
-        for field in serializer._writable_fields
-    ), (
-        'The `.{method_name}()` method does not support writable nested '
-        'fields by default.\nWrite an explicit `.{method_name}()` method for '
-        'serializer `{module}.{class_name}`, or set `read_only=True` on '
-        'nested serializer fields.'.format(
-            method_name=method_name,
-            module=serializer.__class__.__module__,
-            class_name=serializer.__class__.__name__
-        )
-    )
-    assert not any(
-        len(field.source_attrs) > 1 and
-        (field.source_attrs[0] in validated_data) and
-        (field.source_attrs[0] in model_field_info.relations) and
-        isinstance(validated_data[field.source_attrs[0]], (list, dict))
-        for field in serializer._writable_fields
-    ), (
-        'The `.{method_name}()` method does not support writable dotted-source '
-        'fields by default.\nWrite an explicit `.{method_name}()` method for '
-        'serializer `{module}.{class_name}`, or set `read_only=True` on '
-        'dotted-source serializer fields.'.format(
-            method_name=method_name,
-            module=serializer.__class__.__module__,
-            class_name=serializer.__class__.__name__
-        )
-    )
+from .serializers import (JSONAPISerializer, SerializerMetaclass, 
+                          JSONAPIObjectIdSerializer)
+from .helpers import (get_relation_kwargs, get_type_from_model, 
+                      to_coroutine, getattr)
+from .utils import RaiseNested
 
 
 class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
@@ -758,8 +714,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         else:
             return ret
 
-    def create(self, validated_data):
-        raise_errors_on_nested_writes('create', self, validated_data)
+    async def create(self, validated_data):
+        await RaiseNested('create', self, validated_data).raise_nested_writes()
 
         ModelClass = self.Meta.model
 
@@ -802,8 +758,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
 
         return instance
 
-    def update(self, instance, validated_data):
-        raise_errors_on_nested_writes('update', self, validated_data)
+    async def update(self, instance, validated_data):
+        await RaiseNested('update', self, validated_data).raise_nested_writes()
         info = model_meta.get_field_info(instance)
 
         # Simply set each attribute on the instance, and then save it.
@@ -828,4 +784,12 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
 
         return instance
 
-    # Determine the fields to apply...
+    # TODO: test method validation
+    async def validate_type(self, value):
+        obj_type = await getattr(self.Meta, 'model_type', None)
+        if obj_type is None:
+            obj_type = await getattr(self.Meta, 'model', '')
+            obj_type = await get_type_from_model(obj_type) if hasattr(self.Meta, 'model') else ''
+        if not value or value != obj_type:
+            raise ValidationError({'type': [f"\"{value}\" is not a correct object type."]})
+        return value
