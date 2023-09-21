@@ -1,5 +1,6 @@
 import copy
 import contextlib
+import traceback
 from time import timezone
 
 from django.db import models
@@ -11,7 +12,6 @@ from django.core.exceptions import (
 )
 
 from rest_framework.exceptions import ValidationError
-from rest_framework.reverse import reverse
 from rest_framework.settings import api_settings
 from rest_framework.utils import model_meta
 from rest_framework.fields import (
@@ -25,8 +25,8 @@ from rest_framework.validators import (
     UniqueTogetherValidator
 )
 from rest_framework.relations import (
-    HyperlinkedIdentityField, HyperlinkedRelatedField, 
-    ManyRelatedField, SlugRelatedField
+    HyperlinkedIdentityField, HyperlinkedRelatedField,
+    PrimaryKeyRelatedField, ManyRelatedField
 )
 from rest_framework.utils.field_mapping import (
     ClassLookupDict, get_field_kwargs, get_nested_relation_kwargs,
@@ -37,14 +37,52 @@ from rest_framework.serializers import ModelSerializer
 
 from .serializers import (
     JSONAPISerializer, SerializerMetaclass, 
-    JSONAPIAttributesSerializer, JSONAPIObjectIdSerializer
+    JSONAPIAttributesSerializer, JSONAPIObjectIdSerializer,
+    JSONAPIBaseSerializer
 )
 from .helpers import (
-    get_relation_kwargs, get_type_from_model, 
-    to_coroutine, getattr, reverse
+    get_relation_kwargs, get_type_from_model, to_coroutine, getattr
 )
 
 ALL_FIELDS = '__all__'
+
+
+def raise_errors_on_nested_writes(method_name, serializer, validated_data):
+    ModelClass = serializer.Meta.model
+    model_field_info = model_meta.get_field_info(ModelClass)
+    
+    assert not any(
+        isinstance(field, JSONAPIBaseSerializer) and
+        (field.source in validated_data) and
+        (field.source in model_field_info.relations) and
+        isinstance(validated_data[field.source], (list, dict))
+        for field in serializer._writable_fields
+    ), (
+        'The `.{method_name}()` method does not support writable nested '
+        'fields by default.\nWrite an explicit `.{method_name}()` method for '
+        'serializer `{module}.{class_name}`, or set `read_only=True` on '
+        'nested serializer fields.'.format(
+            method_name=method_name,
+            module=serializer.__class__.__module__,
+            class_name=serializer.__class__.__name__
+        )
+    )
+    assert not any(
+        len(field.source_attrs) > 1 and
+        (field.source_attrs[0] in validated_data) and
+        (field.source_attrs[0] in model_field_info.relations) and
+        isinstance(validated_data[field.source_attrs[0]], (list, dict))
+        for field in serializer._writable_fields
+    ), (
+        'The `.{method_name}()` method does not support writable dotted-source '
+        'fields by default.\nWrite an explicit `.{method_name}()` method for '
+        'serializer `{module}.{class_name}`, or set `read_only=True` on '
+        'dotted-source serializer fields.'.format(
+            method_name=method_name,
+            module=serializer.__class__.__module__,
+            class_name=serializer.__class__.__name__
+        )
+    )
 
 
 class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
@@ -57,9 +95,9 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         serializer_field_mapping[postgres_fields.ArrayField] = ListField
         serializer_field_mapping[postgres_fields.JSONField] = JSONField
     serializer_object_id_field = JSONAPIObjectIdSerializer
-    serializer_related_field = HyperlinkedRelatedField
+    serializer_related_field = PrimaryKeyRelatedField
     serializer_related_field_many = ManyRelatedField
-    serializer_related_to_field = SlugRelatedField
+    serializer_related_to_field = PrimaryKeyRelatedField
     serializer_url_field = HyperlinkedIdentityField
     serializer_choice_field = ChoiceField
     
@@ -342,7 +380,6 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         # `view_name` is only valid for hyperlinked relationships.
         if not issubclass(field_class, HyperlinkedRelatedField):
             field_kwargs.pop('view_name', None)
-
         return field_class, field_kwargs
 
     async def build_nested_field(self, field_name, relation_info, nested_depth):
@@ -601,8 +638,7 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         url = await getattr(self, self.url_field_name, None)
         if url and not url.endswith(str(instance.id) + '/'):
             url = f"{url}{str(instance.id)}/"
-        included = {}
-        fields = await self.fields
+        fields, included = await self.fields, {}
         relationships = {key: {'data': await getattr(instance, key)} for key in fields['relationships'].keys()}
         for key, val in relationships.items():
             val = val['data'] if type(val) == dict and 'data' in val else val
@@ -611,8 +647,8 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
                 objects = [obj async for obj in val.all()]
             else:
                 objects = [val] if val else []
-            objects = [await obj for obj in 
-                       JSONAPIObjectIdSerializer(objects, many=True).data]
+            data = await JSONAPIObjectIdSerializer(objects, many=True).data
+            objects = data.get('data') if 'data' in data.keys() else data
             if objects and not is_many:
                 objects, validated_data = objects[0], objects[0]
             elif objects:
@@ -658,17 +694,13 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         data = data.get('data') if 'data' in data.keys() else data
         if data.get('relationships'):
             for name, field in data['relationships'].items():
-                if fields['relationships'][name].__class__ == self.serializer_related_field:
-                    if type(data['relationships'][name]) != dict:
-                        errors[name] = 'needs to specify id and type keys.'
-                    try:
-                        data['relationships'][name] = await reverse(
-                            fields['relationships'][name].view_name, 
-                            [int(data['relationships'][name]['data']['id'])], 
-                            request = self.context['request']
-                        )
-                    except (AttributeError, KeyError, TypeError) as exc:
-                        errors[name] = ['please specify a valid dictionary with id and type keys.']
+                error = ['please specify a valid dictionary with id and type keys.']
+                try:
+                    if fields['relationships'][name].__class__ == self.serializer_related_field:
+                        data['relationships'][name].keys()
+                        data['relationships'][name] = int(data['relationships'][name]['data']['id'])
+                except (AttributeError, KeyError, TypeError) as exc:
+                    errors[name] = error
         for name, field in list(fields.items()):
             if type(field) == dict:
                 for name, field in list(fields.pop(name).items()):
@@ -725,3 +757,75 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
             raise ValidationError(errors)
         else:
             return ret
+
+    def create(self, validated_data):
+        raise_errors_on_nested_writes('create', self, validated_data)
+
+        ModelClass = self.Meta.model
+
+        # Remove many-to-many relationships from validated_data.
+        # They are not valid arguments to the default `.create()` method,
+        # as they require that the instance has already been saved.
+        info = model_meta.get_field_info(ModelClass)
+        many_to_many = {}
+        for field_name, relation_info in info.relations.items():
+            if relation_info.to_many and (field_name in validated_data):
+                many_to_many[field_name] = validated_data.pop(field_name)
+
+        try:
+            instance = ModelClass._default_manager.create(**validated_data)
+        except TypeError:
+            tb = traceback.format_exc()
+            msg = (
+                'Got a `TypeError` when calling `%s.%s.create()`. '
+                'This may be because you have a writable field on the '
+                'serializer class that is not a valid argument to '
+                '`%s.%s.create()`. You may need to make the field '
+                'read-only, or override the %s.create() method to handle '
+                'this correctly.\nOriginal exception was:\n %s' %
+                (
+                    ModelClass.__name__,
+                    ModelClass._default_manager.name,
+                    ModelClass.__name__,
+                    ModelClass._default_manager.name,
+                    self.__class__.__name__,
+                    tb
+                )
+            )
+            raise TypeError(msg)
+
+        # Save many-to-many relationships after the instance is created.
+        if many_to_many:
+            for field_name, value in many_to_many.items():
+                field = getattr(instance, field_name)
+                field.set(value)
+
+        return instance
+
+    def update(self, instance, validated_data):
+        raise_errors_on_nested_writes('update', self, validated_data)
+        info = model_meta.get_field_info(instance)
+
+        # Simply set each attribute on the instance, and then save it.
+        # Note that unlike `.create()` we don't need to treat many-to-many
+        # relationships as being a special case. During updates we already
+        # have an instance pk for the relationships to be associated with.
+        m2m_fields = []
+        for attr, value in validated_data.items():
+            if attr in info.relations and info.relations[attr].to_many:
+                m2m_fields.append((attr, value))
+            else:
+                setattr(instance, attr, value)
+
+        instance.save()
+
+        # Note that many-to-many fields are set after updating instance.
+        # Setting m2m fields triggers signals which could potentially change
+        # updated instance and we do not want it to collide with .update()
+        for attr, value in m2m_fields:
+            field = getattr(instance, attr)
+            field.set(value)
+
+        return instance
+
+    # Determine the fields to apply...
