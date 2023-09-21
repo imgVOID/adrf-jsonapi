@@ -655,41 +655,40 @@ class JSONAPIModelSerializer(JSONAPISerializer, metaclass=SerializerMetaclass):
         read_only_fields = await getattr(meta, 'read_only_fields', [])
         ret = {}
         errors = {}
-        if data['data'].get('relationships'):
-            for name, field in data['data']['relationships'].items():
+        data = data.get('data') if 'data' in data.keys() else data
+        if data.get('relationships'):
+            for name, field in data['relationships'].items():
                 if fields['relationships'][name].__class__ == self.serializer_related_field:
-                    if type(data['data']['relationships'][name]) != dict:
+                    if type(data['relationships'][name]) != dict:
                         errors[name] = 'needs to specify id and type keys.'
                     try:
-                        data['data']['relationships'][name] = await reverse(
+                        data['relationships'][name] = await reverse(
                             fields['relationships'][name].view_name, 
-                            [int(data['data']['relationships'][name]['data']['id'])], 
+                            [int(data['relationships'][name]['data']['id'])], 
                             request = self.context['request']
                         )
-                    except (KeyError, AttributeError) as exc:
-                        errors[name] = [exc]
-                    except (TypeError) as exc:
-                        errors[name] = ['needs to specify a dict with id and type keys.']
+                    except (AttributeError, KeyError, TypeError) as exc:
+                        errors[name] = ['please specify a valid dictionary with id and type keys.']
         for name, field in list(fields.items()):
             if type(field) == dict:
                 for name, field in list(fields.pop(name).items()):
                     if hasattr(field, 'child_relation'):
                         continue
                     fields[name] = field
-        for name, field in list(data['data'].items()):
+        for name, field in list(data.items()):
             if type(field) == dict:
-                for name, field in list(data['data'].pop(name).items()):
+                for name, field in list(data.pop(name).items()):
                     if type(field) == dict and type(field.get('data')) == list:
                         continue
                     elif name == 'self':
                         continue
                     else:
-                        data['data'][name] = field
+                        data[name] = field
         for name, field in fields.items():
             if field.read_only or name in read_only_fields:
                 continue
-            value = data['data'].get(name)
-            value = value.pop('data', value) if type(value) == dict else value
+            value = data.get(name)
+            value = value.pop('data', value) if type(value) == dict and 'data' in value.keys() else value
             value = [value]
             run_validation = await to_coroutine(field.run_validation)
             validate_method = await getattr(self, 'validate_' + name, None)
