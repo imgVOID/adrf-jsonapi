@@ -4,6 +4,7 @@ from django.test.client import RequestFactory
 
 from jsonapi.model_serializers import JSONAPIModelSerializer
 from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation
+from jsonapi.serializer_model_async import ModelSerializerAsync
 from jsonapi.helpers import get_type_from_model
 
 
@@ -197,3 +198,21 @@ class TestModelSerializer(TestCase):
         [self.assertIn('code', x) and self.assertIn('source', x) for x in errors['errors']]
         [self.assertIn('The JSON field ', x['detail']) for x in errors['errors']]
         [self.assertIn('http', x['source']['pointer']) for x in errors['errors']]
+
+    async def test_create(self):
+        obj = await self.main_query.afirst()
+        class Serializer(ModelSerializerAsync):
+            class Meta:
+                fields = '__all__'
+                model = self.main_model
+        data = await Serializer(obj).data
+        data['text'] = 'The new object text'
+        serializer = Serializer(data=data)
+        await serializer.is_valid()
+        test = await serializer.create(await serializer.data)
+        self.assertEqual(str(test), data['text'])
+        self.assertIsInstance(
+            test.foreign_key, 
+            self.main_model.foreign_key.field.related_model
+        )
+        self.assertEqual(len([obj async for obj in self.main_model.objects.filter(text__startswith="The")]), 1)
