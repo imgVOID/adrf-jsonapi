@@ -1,12 +1,14 @@
 from re import findall
 from django.test import TestCase
 from django.test.client import RequestFactory
+from asgiref.sync import sync_to_async
 
 from jsonapi.model_serializers import JSONAPIModelSerializer
-from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation
+from adrf_jsonapi.models import Test, TestIncluded, TestIncludedRelation, TestDirectCon
 from jsonapi.serializer_model_async import ModelSerializerAsync
 from jsonapi.helpers import get_type_from_model
 
+import asyncio
 
 # TODO: test uniquness
 class TestModelSerializer(TestCase):
@@ -29,6 +31,8 @@ class TestModelSerializer(TestCase):
         create_objects(TestIncludedRelation, test_included_relation_data)
         create_objects(TestIncluded, test_included_data)
         create_objects(Test, test_data)
+        # Set asyncio loop on Windows
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
     @classmethod
     def get_serializer(cls):
@@ -201,18 +205,107 @@ class TestModelSerializer(TestCase):
 
     async def test_create(self):
         obj = await self.main_query.afirst()
+        
         class Serializer(ModelSerializerAsync):
             class Meta:
                 fields = '__all__'
                 model = self.main_model
+        
         data = await Serializer(obj).data
+        data['text'], data['foreign_key'] = 'The new object text', await TestIncluded.objects.afirst()
+        del data['id']
+        serializer = Serializer(data=data)
+        await serializer.is_valid()
+        obj = await serializer.create(await serializer.data)
+        self.assertIsInstance(
+            obj.foreign_key, 
+            self.main_model.foreign_key.field.related_model
+        )
+        self.assertIsInstance(await self.main_model.objects.aget(text=data['text']), self.main_model)
+        del data['foreign_key']
+        del data['many_to_many']
+        [self.assertEqual(getattr(obj, key), data[key]) for key in data.keys()]
+        
+    async def test_create_list(self):
+        objs = [obj async for obj in self.main_query.all()]
+        
+        class Serializer(ModelSerializerAsync):
+            class Meta:
+                fields = '__all__'
+                model = self.main_model
+        serializer = Serializer(objs, many=True)
+        data = await serializer.data
+        data_new = []
+        for obj in data:
+            obj['text'] = 'The new object text'
+            obj['foreign_key'] = await TestIncluded.objects.afirst()
+            del obj['id']
+            data_new.append(dict(obj))
+        objs = await serializer.create(data_new)
+        [[self.assertEqual(getattr(obj, key), data_new[0][key]) for key in data[0].keys() 
+          if key not in ('id', 'many_to_many')] for obj in objs]
+    
+    async def test_acreate(self):
+        obj = await self.main_query.afirst()
+        
+        class Serializer(ModelSerializerAsync):
+            class Meta:
+                fields = '__all__'
+                model = TestDirectCon
+                
+        data = dict(await Serializer(obj).data)
+        data['text'] = 'The new object text'
+        del data['id']
+        obj = await Serializer(data=data).acreate(data)
+        [self.assertEqual(getattr(obj, key), data[key]) for key in data.keys()]
+        self.assertIsInstance(await TestDirectCon.objects.aget(text=data['text']), TestDirectCon)
+
+    async def test_acreate_list(self):
+        obj = [x async for x in self.main_query.all()]
+        
+        class Serializer(ModelSerializerAsync):
+            class Meta:
+                fields = '__all__'
+                model = TestDirectCon
+                
+        data = await Serializer(obj, many=True).data
+        objs = await Serializer(data=data).acreate(data)
+        
+        [[self.assertEqual(getattr(obj, key), data[0][key]) for key in data[0].keys() if key != 'id'] for obj in objs]
+        #self.assertIsInstance(await TestDirectCon.objects.aget(text=data['text']), TestDirectCon)
+
+    async def test_update(self):
+        obj = await self.main_query.afirst()
+        
+        class SerializerNested(ModelSerializerAsync):
+            class Meta:
+                fields = '__all__'
+                model = TestIncluded
+        
+        class Serializer(ModelSerializerAsync):
+            foreign_key = SerializerNested()
+            class Meta:
+                fields = '__all__'
+                model = self.main_model
+        
+        data = await Serializer(obj).data
+        self.assertEqual(data['foreign_key']['id'], 1)
+        data['foreign_key'] = None
         data['text'] = 'The new object text'
         serializer = Serializer(data=data)
         await serializer.is_valid()
-        test = await serializer.create(await serializer.data)
-        self.assertEqual(str(test), data['text'])
-        self.assertIsInstance(
-            test.foreign_key, 
-            self.main_model.foreign_key.field.related_model
-        )
-        self.assertEqual(len([obj async for obj in self.main_model.objects.filter(text__startswith="The")]), 1)
+        await serializer.update(obj, data)
+        try:
+            obj_updated = await self.main_model.objects.aget(
+                text__startswith=data['text']
+            )
+        except obj.__class__.DoesNotExist:
+            raise AssertionError('Not saved.')
+        self.assertEqual(str(obj), data['text'])
+        self.assertEqual(str(obj_updated), data['text'])
+        self.assertIsNone(obj.foreign_key)
+        self.assertIsNone(obj_updated.foreign_key)
+        del data['foreign_key']
+        del data['many_to_many']
+        [self.assertEqual(getattr(obj, key), data[key]) for key in data.keys()]
+        [self.assertEqual(getattr(obj_updated, key), data[key]) for key in data.keys()]
